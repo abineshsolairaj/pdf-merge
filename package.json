@@ -1,12 +1,39 @@
 {
-  "name": "pdf-merge",
+  "name": "@abineshsolairaj/pdf-merge",
   "version": "1.0.0",
-  "description": "Utility to merge PDFs from Base64 strings or URLs.",
+  "description": "Utility to merge PDFs from Base64 strings or URLs, preserving input order.",
   "main": "dist/pdfMerger.js",
   "types": "dist/pdfMerger.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only test/pdfMerger.test.ts"
+    "test": "ts-node --transpile-only test/pdfMerger.test.ts",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "keywords": [
+    "pdf",
+    "merge",
+    "pdf-merge",
+    "base64",
+    "pdf-lib",
+    "typescript"
+  ],
+  "author": "abineshsolairaj <abineshsolairaj@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abineshsolairaj/pdf-merge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/abineshsolairaj/pdf-merge/issues"
+  },
+  "homepage": "https://github.com/abineshsolairaj/pdf-merge#readme",
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1"

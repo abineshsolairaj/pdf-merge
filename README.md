@@ -7,11 +7,18 @@ either from Base64-encoded strings or from URLs. Built on
 ## Install
 
 ```bash
-npm install
-npm run build
+npm install @abineshsolairaj/pdf-merge
 ```
 
 Requires Node.js 18+ (uses the global `fetch` and `AbortController`).
+
+### Local development
+
+```bash
+npm install
+npm run build
+npm test
+```
 
 ## API
 
@@ -25,7 +32,7 @@ as a Base64 string. Page order strictly follows the input array order.
 - Throws `PdfMergeError` if the input array is empty.
 
 ```ts
-import { mergeBase64PDFs } from 'pdf-merge';
+import { mergeBase64PDFs } from '@abineshsolairaj/pdf-merge';
 
 const merged = await mergeBase64PDFs([pdfA_b64, pdfB_b64, pdfC_b64]);
 // merged === Base64 string with pages from A, then B, then C
@@ -43,7 +50,7 @@ index order and returns the merged document as a Base64 string.
 - Throws `PdfMergeError` if the input array is empty.
 
 ```ts
-import { mergePdfUrls } from 'pdf-merge';
+import { mergePdfUrls } from '@abineshsolairaj/pdf-merge';
 
 const merged = await mergePdfUrls(
   ['https://example.com/a.pdf', 'https://example.com/b.pdf'],
