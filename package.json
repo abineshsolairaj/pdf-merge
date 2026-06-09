@@ -1,0 +1,22 @@
+{
+  "name": "pdf-merge",
+  "version": "1.0.0",
+  "description": "Utility to merge PDFs from Base64 strings or URLs.",
+  "main": "dist/pdfMerger.js",
+  "types": "dist/pdfMerger.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "ts-node --transpile-only test/pdfMerger.test.ts"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
