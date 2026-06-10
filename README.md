@@ -7,11 +7,18 @@ either from Base64-encoded strings or from URLs. Built on
 ## Install
 
 ```bash
-npm install
-npm run build
+npm install @abineshsolairaj/pdf-merge
 ```
 
 Requires Node.js 18+ (uses the global `fetch` and `AbortController`).
+
+### Local development
+
+```bash
+npm install
+npm run build
+npm test
+```
 
 ## API
 
@@ -25,7 +32,7 @@ as a Base64 string. Page order strictly follows the input array order.
 - Throws `PdfMergeError` if the input array is empty.
 
 ```ts
-import { mergeBase64PDFs } from 'pdf-merge';
+import { mergeBase64PDFs } from '@abineshsolairaj/pdf-merge';
 
 const merged = await mergeBase64PDFs([pdfA_b64, pdfB_b64, pdfC_b64]);
 // merged === Base64 string with pages from A, then B, then C
@@ -43,7 +50,7 @@ index order and returns the merged document as a Base64 string.
 - Throws `PdfMergeError` if the input array is empty.
 
 ```ts
-import { mergePdfUrls } from 'pdf-merge';
+import { mergePdfUrls } from '@abineshsolairaj/pdf-merge';
 
 const merged = await mergePdfUrls(
   ['https://example.com/a.pdf', 'https://example.com/b.pdf'],
@@ -71,3 +78,25 @@ npm test        # ts-node test/pdfMerger.test.ts
 The test suite spins up a local HTTP server and exercises the TRD acceptance
 criteria (ordering, 404 handling, invalid Base64, empty input, timeouts,
 non-PDF responses).
+
+## Publish from GitHub Actions
+
+This repository includes [publish workflow](.github/workflows/publish.yml) to
+publish to npm when a GitHub Release is published (or when manually triggered).
+
+1. Create an npm token that can publish with 2FA enabled:
+   - npm -> Account Settings -> Access Tokens
+   - Use an `Automation` token, or a granular token with package publish
+     permission and 2FA bypass.
+2. In GitHub repo settings, add secret `NPM_TOKEN` with the token value.
+3. Bump package version and push:
+
+```bash
+npm version patch
+git push --follow-tags
+```
+
+4. Create/publish a GitHub Release for the new tag.
+
+The workflow installs dependencies, runs tests, builds, and publishes
+`@abineshsolairaj/pdf-merge` to npm.
