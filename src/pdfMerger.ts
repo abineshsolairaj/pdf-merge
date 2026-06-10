@@ -2,6 +2,8 @@ import { PDFDocument } from 'pdf-lib';
 
 const PDF_MAGIC = '%PDF-';
 const DEFAULT_FETCH_TIMEOUT_MS = 5000;
+const DEFAULT_MAX_BYTES_PER_URL = 100 * 1024 * 1024; // 100 MiB
+const DEFAULT_ALLOWED_PROTOCOLS = ['http:', 'https:'] as const;
 
 export class PdfMergeError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
@@ -100,19 +102,117 @@ export async function mergeBase64PDFs(base64Strings: string[]): Promise<string> 
   return Buffer.from(mergedBytes).toString('base64');
 }
 
-async function fetchPdf(url: string, timeoutMs: number): Promise<Uint8Array> {
+// Removes credentials, query string, and fragment from a URL before it ends up
+// in error messages or logs. Signed-URL tokens are commonly placed in the
+// query string, so we drop it; userinfo can carry HTTP Basic creds.
+function sanitizeUrlForMessages(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
+    u.username = '';
+    u.password = '';
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return '[unparseable-url]';
+  }
+}
+
+function validateAndParseUrl(
+  url: unknown,
+  index: number,
+  allowedProtocols: readonly string[],
+): URL {
+  if (typeof url !== 'string' || url.length === 0) {
+    throw new PdfMergeError(`Invalid URL at index ${index}: must be a non-empty string`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new PdfMergeError(`Invalid URL at index ${index}: not a parseable URL`);
+  }
+  if (!allowedProtocols.includes(parsed.protocol)) {
+    throw new PdfMergeError(
+      `Invalid URL at index ${index}: protocol "${parsed.protocol}" is not allowed ` +
+        `(allowed: ${allowedProtocols.join(', ')})`,
+    );
+  }
+  return parsed;
+}
+
+async function readBodyWithCap(
+  response: Response,
+  maxBytes: number,
+  safeUrl: string,
+): Promise<Buffer> {
+  const declared = response.headers.get('content-length');
+  if (declared !== null) {
+    const declaredNum = Number(declared);
+    if (Number.isFinite(declaredNum) && declaredNum > maxBytes) {
+      throw new PdfFetchError(
+        safeUrl,
+        `Failed to fetch PDF from URL: ${safeUrl} (Content-Length ${declaredNum} ` +
+          `exceeds maxBytes ${maxBytes})`,
+      );
+    }
+  }
+
+  // No body (e.g. 204) — treat as empty buffer; assertPdfBytes will reject it.
+  if (!response.body) {
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new PdfFetchError(
+          safeUrl,
+          `Failed to fetch PDF from URL: ${safeUrl} (response body exceeds maxBytes ${maxBytes})`,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* reader may already be released after cancel */
+    }
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength)));
+}
+
+async function fetchPdf(
+  rawUrl: string,
+  index: number,
+  timeoutMs: number,
+  maxBytes: number,
+  allowedProtocols: readonly string[],
+): Promise<Uint8Array> {
+  validateAndParseUrl(rawUrl, index, allowedProtocols);
+  const safeUrl = sanitizeUrlForMessages(rawUrl);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
-    response = await fetch(url, { signal: controller.signal });
+    response = await fetch(rawUrl, { signal: controller.signal, redirect: 'follow' });
   } catch (err) {
     const aborted = (err as { name?: string } | null)?.name === 'AbortError';
     throw new PdfFetchError(
-      url,
+      safeUrl,
       aborted
-        ? `Failed to fetch PDF from URL: ${url} (timeout after ${timeoutMs}ms)`
-        : `Failed to fetch PDF from URL: ${url}`,
+        ? `Failed to fetch PDF from URL: ${safeUrl} (timeout after ${timeoutMs}ms)`
+        : `Failed to fetch PDF from URL: ${safeUrl}`,
       err,
     );
   } finally {
@@ -121,19 +221,36 @@ async function fetchPdf(url: string, timeoutMs: number): Promise<Uint8Array> {
 
   if (!response.ok) {
     throw new PdfFetchError(
-      url,
-      `Failed to fetch PDF from URL: ${url} (HTTP ${response.status})`,
+      safeUrl,
+      `Failed to fetch PDF from URL: ${safeUrl} (HTTP ${response.status})`,
     );
   }
 
-  const buf = Buffer.from(await response.arrayBuffer());
+  // If a redirect chased the request to a disallowed protocol (e.g. data:), reject.
   try {
-    assertPdfBytes(buf, `response from ${url}`);
+    if (response.url) {
+      const finalUrl = new URL(response.url);
+      if (!allowedProtocols.includes(finalUrl.protocol)) {
+        throw new PdfFetchError(
+          safeUrl,
+          `Failed to fetch PDF from URL: ${safeUrl} (redirected to disallowed protocol ` +
+            `"${finalUrl.protocol}")`,
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof PdfFetchError) throw err;
+    // If parsing response.url fails, fall through — we don't want to block legit responses.
+  }
+
+  const buf = await readBodyWithCap(response, maxBytes, safeUrl);
+  try {
+    assertPdfBytes(buf, `response from ${safeUrl}`);
   } catch (err) {
     if (err instanceof InvalidPdfFormatError) {
       throw new PdfFetchError(
-        url,
-        `Failed to fetch PDF from URL: ${url} (response is not a valid PDF)`,
+        safeUrl,
+        `Failed to fetch PDF from URL: ${safeUrl} (response is not a valid PDF)`,
         err,
       );
     }
@@ -145,13 +262,29 @@ async function fetchPdf(url: string, timeoutMs: number): Promise<Uint8Array> {
 export interface MergePdfUrlsOptions {
   /** Per-request timeout in milliseconds. Defaults to 5000. */
   timeoutMs?: number;
+  /**
+   * Maximum bytes accepted from any single URL response. Defaults to ~100 MiB.
+   * Prevents memory exhaustion from hostile or runaway endpoints.
+   */
+  maxBytesPerUrl?: number;
+  /**
+   * Protocols accepted when fetching. Defaults to ['http:', 'https:'].
+   * Pass a narrower list (e.g. `['https:']`) to harden further.
+   */
+  allowedProtocols?: readonly string[];
 }
 
 /**
  * Fetches PDFs from the given ordered URLs and merges them into a single Base64 PDF string.
  * Downloads happen in parallel; the merge step assembles them in the original index order.
  *
- * @throws {PdfMergeError} when the input array is empty.
+ * Security defaults:
+ *  - Only `http:` and `https:` URLs are accepted (blocks `file:`, `data:`, etc.).
+ *  - Each response is capped at ~100 MiB (configurable via `maxBytesPerUrl`).
+ *  - URLs are sanitized in error messages (credentials and query strings stripped).
+ *  - If a redirect lands on a disallowed protocol, the request is rejected.
+ *
+ * @throws {PdfMergeError} when the input array is empty or a URL fails validation.
  * @throws {PdfFetchError} when a URL cannot be retrieved or does not return a PDF.
  * @throws {InvalidPdfFormatError} when a fetched payload is not a parseable PDF.
  */
@@ -163,8 +296,15 @@ export async function mergePdfUrls(
     throw new PdfMergeError('Input array must contain at least one URL');
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const maxBytes = options.maxBytesPerUrl ?? DEFAULT_MAX_BYTES_PER_URL;
+  const allowedProtocols = options.allowedProtocols ?? DEFAULT_ALLOWED_PROTOCOLS;
 
-  const results = await Promise.all(urls.map((url) => fetchPdf(url, timeoutMs)));
+  // Validate all URLs up front so we fail fast before opening any sockets.
+  urls.forEach((u, i) => validateAndParseUrl(u, i, allowedProtocols));
+
+  const results = await Promise.all(
+    urls.map((url, i) => fetchPdf(url, i, timeoutMs, maxBytes, allowedProtocols)),
+  );
   const mergedBytes = await mergePdfBytes(results);
   return Buffer.from(mergedBytes).toString('base64');
 }
