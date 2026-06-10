@@ -38,25 +38,60 @@ const merged = await mergeBase64PDFs([pdfA_b64, pdfB_b64, pdfC_b64]);
 // merged === Base64 string with pages from A, then B, then C
 ```
 
-### `mergePdfUrls(urls: string[], options?: { timeoutMs?: number }): Promise<string>`
+### `mergePdfUrls(urls: string[], options?): Promise<string>`
 
 Fetches PDFs from the given URLs in parallel, then merges them in the original
 index order and returns the merged document as a Base64 string.
 
-- Default per-request timeout is `5000` ms; override with `options.timeoutMs`.
-- Throws `PdfFetchError` (with `.url`) on HTTP errors, timeouts, or non-PDF
-  responses.
-- Throws `InvalidPdfFormatError` if a fetched payload can't be parsed.
-- Throws `PdfMergeError` if the input array is empty.
+Options:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `timeoutMs` | `5000` | Per-request timeout in milliseconds. |
+| `maxBytesPerUrl` | `100 * 1024 * 1024` | Maximum bytes accepted from any single response. Caps memory use against hostile or runaway endpoints. |
+| `allowedProtocols` | `['http:', 'https:']` | URL protocols allowed. Pass `['https:']` to harden further. |
+
+Throws:
+
+- `PdfMergeError` — empty input, unparseable URL, or disallowed protocol.
+- `PdfFetchError` (with `.url`) — HTTP errors, timeouts, oversize responses,
+  redirects to disallowed protocols, or non-PDF responses.
+- `InvalidPdfFormatError` — fetched payload can't be parsed as a PDF.
 
 ```ts
 import { mergePdfUrls } from '@abineshsolairaj/pdf-merge';
 
 const merged = await mergePdfUrls(
   ['https://example.com/a.pdf', 'https://example.com/b.pdf'],
-  { timeoutMs: 8000 },
+  { timeoutMs: 8000, maxBytesPerUrl: 20 * 1024 * 1024, allowedProtocols: ['https:'] },
 );
 ```
+
+## Security model
+
+`mergePdfUrls` is the higher-risk function — it dereferences caller-supplied
+URLs. Defaults are chosen to be safe out of the box:
+
+- **Protocol allowlist** — only `http:` and `https:` are accepted; `file:`,
+  `data:`, `ftp:`, etc. are rejected before any socket is opened.
+- **Response size cap** — `maxBytesPerUrl` is enforced both against the
+  declared `Content-Length` and during streaming, so a hostile endpoint that
+  serves an unbounded body cannot exhaust the process heap.
+- **URL sanitization in errors** — credentials (`user:pass@`) and query
+  strings are stripped from URLs before they appear in error messages or on
+  the `PdfFetchError.url` property, so signed-URL tokens and HTTP Basic
+  passwords don't end up in your logs.
+- **Redirect-protocol check** — if a redirect lands on a disallowed protocol,
+  the request is rejected.
+- **Per-request timeout** — default `5000 ms` via `AbortController`.
+
+What this library does **not** do for you:
+
+- DNS / IP allowlisting (SSRF to internal hosts via `http://10.0.0.1/…` or
+  cloud metadata endpoints). If your callers can supply URLs, do the
+  IP-range filtering at your network or application layer.
+- Concurrency limiting — `Promise.all` is used; pass a sensibly sized array.
+- Authentication — caller is responsible for any auth headers.
 
 ## Error types
 
